@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Title</title>
+</head>
+<body>
+<video id="player" style="width:600px;height:600px" controls></video>
+<button onclick="startVideo()">Start</button>
+<script>
+
+function startVideo() {
+    const player = document.querySelector("#player");
+    const mediaSource = new MediaSource();
+    let isPlaying = false;
+    const maxBuffer = 5 * 10240000;
+    let currentBufferLength = 0;
+    player.src = URL.createObjectURL(mediaSource);
+
+    player.addEventListener("seeking", function () {
+        alert("seeking");
+    });
+
+    mediaSource.addEventListener("sourceopen", () => {
+        const ws = new WebSocket("ws://localhost:9999");
+        ws.binaryType = "arraybuffer";
+
+        ws.onopen = function () {
+            const source = mediaSource.addSourceBuffer("video/mp4; codecs=\"avc1.64001F, mp4a.40.2\"");
+            const fragments = [];
+            let started = false;
+            let dataEnd = false;
+            let endStream = false;
+            let isReading = false;
+
+            ws.onmessage = function (res) {
+                if (res.data === "end") {
+                    dataEnd = true;
+                    return;
+                }
+                const buf = res.data;
+                fragments.push(buf);
+                if (!started) {
+                    started = true;
+                    readNext();
+                }
+            }
+
+            let token = null;
+
+            const readNext = () => {
+                if (isReading) {
+                    return;
+                }
+
+                if (token !== null) {
+                    clearTimeout(token);
+                    token = null;
+                }
+
+                if (fragments.length > 0 && source.updating) {
+                    token = setTimeout(readNext, 10);
+                    return;
+                }
+
+                if (fragments.length === 0) {
+                    if (dataEnd) {
+                        endStream = true;
+                    } else {
+                        token = setTimeout(readNext, 10);
+                    }
+                    return;
+                }
+
+                isReading = true;
+                const buf = fragments.shift();
+                source.appendBuffer(buf);
+            };
+
+            source.addEventListener("updateend", function () {
+                if (endStream) {
+                    mediaSource.endOfStream();
+                    console.log("end");
+                    return;
+                }
+                if (isReading) {
+                    isReading = false;
+                }
+                if (!isPlaying) {
+                    player.play();
+                    isPlaying = true;
+                }
+            });
+
+            ws.send("start");
+
+            let lastTime = 0;
+
+            player.addEventListener("timeupdate", function (event) {
+                const currentTime = Math.floor(event.target.currentTime);
+                if (currentTime - lastTime > 30 && !source.updating) {
+                    source.remove(lastTime, currentTime - 2);
+                    lastTime = currentTime - 2;
+                }
+                const buffered = source.buffered
+                if (buffered.length === 0) {
+                    readNext();
+                } else {
+                    const endTime = Math.floor(source.buffered.end(source.buffered.length - 1));
+                    if (endTime - currentTime < 10) {
+                        readNext();
+                    }
+                }
+            });
+        }
+    })
+}
+
+</script>
+</body>
+</html>
